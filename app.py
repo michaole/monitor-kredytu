@@ -427,7 +427,6 @@ with tab5:
             DATA_DIR.mkdir(exist_ok=True)
             CSV_CACHE.write_bytes(raw)          # zapis na dysk
             st.success(f"Wczytano {len(df_new)} wierszy. Plik zapisany – nie trzeba wgrywać go przy kolejnych sesjach.")
-            st.rerun()
 
     # ── treść analizy ─────────────────────────────────────────────────────────
     df = st.session_state.mbank_df
