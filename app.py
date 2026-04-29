@@ -16,8 +16,8 @@ st.set_page_config(
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 _MIESIACE = [
-    "", "stycznia", "lutego", "marca", "kwietnia", "maja", "czerwca",
-    "lipca", "sierpnia", "września", "października", "listopada", "grudnia",
+    "", "styczeń", "luty", "marzec", "kwiecień", "maj", "czerwiec",
+    "lipiec", "sierpień", "wrzesień", "październik", "listopad", "grudzień",
 ]
 
 def fmt_miesiac(d: date) -> str:
@@ -532,7 +532,7 @@ with tab4:
 
     st.info(
         f"Przy nadpłacie **{fmt_pln(monthly_op)}/mies.** kredyt skończy się "
-        f"**{fmt_miesiac(end_prog)}** zamiast **{fmt_miesiac(end_base)}** "
+        f"**w {fmt_miesiac(end_prog)}** zamiast **{fmt_miesiac(end_base)}** "
         f"– czyli **{saved_inst_prog} rat wcześniej** "
         f"({saved_inst_prog // 12} lat {saved_inst_prog % 12} mies.). "
         f"Łączna oszczędność na odsetkach: **{fmt_pln(saved_prog)}**."
