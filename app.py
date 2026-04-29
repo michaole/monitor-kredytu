@@ -268,15 +268,15 @@ end_op   = sched_op["Data"].iloc[-1]
 
 st.title("🏠 Monitor Kredytu Hipotecznego")
 st.caption(
-    f"Pierwsza rata: **{start_date.strftime('%d.%m.%Y')}** · "
+    f"Następna rata: **{start_date.strftime('%d.%m.%Y')}** · "
     f"Oprocentowanie: **{rate_pct}%** · "
     f"Saldo: **{fmt_pln(balance)}**"
 )
 
 # ── tabs ──────────────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["📊 Podsumowanie", "📅 Harmonogram", "💰 Nadpłaty", "📂 Historia (mBank CSV)"]
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    ["📊 Podsumowanie", "📅 Harmonogram", "💰 Nadpłaty", "🔮 Prognoza", "📂 Historia (mBank CSV)"]
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -468,10 +468,134 @@ with tab3:
         c4.metric("Bez nadpłat", end_base.strftime("%m.%Y"))
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 4 – Historia mBank CSV
+# TAB 4 – Prognoza ze stałą nadpłatą
 # ═══════════════════════════════════════════════════════════════════════════════
 
 with tab4:
+    st.subheader("Prognoza ze stałą miesięczną nadpłatą")
+
+    col_inp, col_res = st.columns([1, 2])
+
+    with col_inp:
+        monthly_op = st.number_input(
+            "Stała nadpłata miesięczna (PLN)",
+            min_value=0.0,
+            value=9_850.0,
+            step=100.0,
+            format="%.2f",
+        )
+        prog_mode = st.radio(
+            "Efekt nadpłaty",
+            ["reduce_term", "reduce_installment"],
+            format_func=lambda x: (
+                "Skrócenie okresu" if x == "reduce_term" else "Zmniejszenie raty"
+            ),
+            key="prog_mode",
+        )
+
+    # Buduj harmonogram ze stałą nadpłatą
+    prog_overpayments = {nr: monthly_op for nr in range(1, n_inst + 1)}
+    sched_prog = build_schedule(
+        balance, rate_pct, n_inst, start_date, prog_overpayments, prog_mode
+    )
+
+    interest_prog      = sched_prog["Odsetki"].sum()
+    saved_prog         = interest_base - interest_prog
+    saved_inst_prog    = len(sched_base) - len(sched_prog)
+    end_prog           = sched_prog["Data"].iloc[-1]
+    total_op_prog      = sched_prog["Nadpłata"].sum()
+    miesięczna_prog    = base_payment + monthly_op
+
+    with col_res:
+        m1, m2, m3 = st.columns(3)
+        m1.metric(
+            "Koniec kredytu",
+            end_prog.strftime("%m.%Y"),
+            delta=f"-{saved_inst_prog} rat vs. bez nadpłat",
+            delta_color="inverse",
+        )
+        m2.metric(
+            "Oszczędność na odsetkach",
+            fmt_pln(saved_prog),
+            delta=f"-{fmt_pln(saved_prog)}",
+            delta_color="inverse",
+        )
+        m3.metric("Miesięczna wpłata łącznie", fmt_pln(miesięczna_prog))
+
+    st.info(
+        f"Przy nadpłacie **{fmt_pln(monthly_op)}/mies.** kredyt skończy się "
+        f"**{end_prog.strftime('%B %Y')}** zamiast **{end_base.strftime('%B %Y')}** "
+        f"– czyli **{saved_inst_prog} rat wcześniej** "
+        f"({saved_inst_prog // 12} lat {saved_inst_prog % 12} mies.). "
+        f"Łączna oszczędność na odsetkach: **{fmt_pln(saved_prog)}**."
+    )
+
+    st.divider()
+
+    # Wykres porównawczy saldo
+    fig_prog = go.Figure()
+    fig_prog.add_trace(go.Scatter(
+        x=sched_base["Data"], y=sched_base["Saldo po"],
+        name="Bez nadpłat",
+        line=dict(color="#94a3b8", dash="dash"),
+        fill="tozeroy", fillcolor="rgba(148,163,184,0.08)",
+    ))
+    fig_prog.add_trace(go.Scatter(
+        x=sched_prog["Data"], y=sched_prog["Saldo po"],
+        name=f"Nadpłata {fmt_pln(monthly_op)}/mies.",
+        line=dict(color="#10b981", width=2),
+        fill="tozeroy", fillcolor="rgba(16,185,129,0.12)",
+    ))
+    fig_prog.update_layout(
+        title="Saldo w czasie – porównanie",
+        xaxis_title="Data", yaxis_title="PLN",
+        hovermode="x unified", height=380,
+        legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99),
+    )
+    st.plotly_chart(fig_prog, use_container_width=True)
+
+    # Wykres struktury płatności
+    fig_prog_bar = go.Figure()
+    fig_prog_bar.add_trace(go.Bar(
+        x=sched_prog["Data"], y=sched_prog["Odsetki"],
+        name="Odsetki", marker_color="#f43f5e",
+    ))
+    fig_prog_bar.add_trace(go.Bar(
+        x=sched_prog["Data"], y=sched_prog["Kapitał"],
+        name="Kapitał", marker_color="#6366f1",
+    ))
+    fig_prog_bar.add_trace(go.Bar(
+        x=sched_prog["Data"], y=sched_prog["Nadpłata"],
+        name="Nadpłata", marker_color="#10b981",
+    ))
+    fig_prog_bar.update_layout(
+        barmode="stack",
+        title="Struktura miesięcznych wpłat",
+        xaxis_title="Data", yaxis_title="PLN",
+        height=320,
+    )
+    st.plotly_chart(fig_prog_bar, use_container_width=True)
+
+    # Tabela harmonogramu
+    with st.expander("Pokaż pełny harmonogram prognozy"):
+        disp_prog = sched_prog.copy()
+        disp_prog["Data"] = disp_prog["Data"].apply(lambda d: d.strftime("%d.%m.%Y"))
+        for col in ["Saldo przed","Odsetki","Kapitał","Nadpłata","Rata","Łączna wpłata","Saldo po","Suma odsetek"]:
+            disp_prog[col] = disp_prog[col].apply(lambda x: f"{x:,.2f}")
+        st.dataframe(disp_prog, use_container_width=True, hide_index=True, height=400)
+
+        csv_prog = sched_prog.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "⬇️ Pobierz harmonogram prognozy CSV",
+            csv_prog, "prognoza_kredytu.csv", "text/csv",
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 5 – Historia mBank CSV
+# ═══════════════════════════════════════════════════════════════════════════════
+
+with tab5:
     st.subheader("Historia spłat z mBank")
     st.markdown(
         "Wgraj plik CSV eksportowany z mBank Hipoteczny "
