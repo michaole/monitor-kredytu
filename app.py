@@ -226,6 +226,8 @@ def summarize_mbank(df: pd.DataFrame) -> dict:
 
 if "overpayments" not in st.session_state:
     st.session_state.overpayments: dict = {}
+if "mbank_df" not in st.session_state:
+    st.session_state.mbank_df = None
 
 # ── sidebar ───────────────────────────────────────────────────────────────────
 
@@ -283,8 +285,9 @@ st.caption(
 
 # ── tabs ──────────────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["📊 Podsumowanie", "📅 Harmonogram", "💰 Nadpłaty", "🔮 Prognoza", "📂 Historia (mBank CSV)"]
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+    ["📊 Podsumowanie", "📅 Harmonogram", "💰 Nadpłaty", "🔮 Prognoza",
+     "📈 Analiza wsteczna", "📂 Historia (mBank CSV)"]
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -600,10 +603,196 @@ with tab4:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 5 – Historia mBank CSV
+# TAB 5 – Analiza wsteczna
 # ═══════════════════════════════════════════════════════════════════════════════
 
 with tab5:
+    st.subheader("Analiza wsteczna spłaconego kredytu")
+
+    df_hist = st.session_state.mbank_df
+
+    if df_hist is None:
+        st.info(
+            "Wgraj plik CSV z historią mBank w zakładce **📂 Historia (mBank CSV)**, "
+            "aby zobaczyć analizę wsteczną."
+        )
+    else:
+        stats = summarize_mbank(df_hist)
+        opis  = df_hist["opis"].str.lower()
+
+        mask_odsetki_rata = opis.str.contains(r"sp.ata raty - odsetki",  regex=True, na=False)
+        mask_kapital_rata = opis.str.contains(r"sp.ata raty - kapita",   regex=True, na=False)
+        mask_kapital_nadp = opis.str.contains(r"cz.*sp.ata.*kapita",     regex=True, na=False)
+        mask_odsetki_nadp = opis.str.contains(r"cz.*sp.ata.*odsetki",    regex=True, na=False)
+
+        # ── metryki główne ────────────────────────────────────────────────────
+        kapital_splac = stats["otwarcie_kwota"] - balance
+        lata_kredytu  = (date.today() - stats["otwarcie_data"]).days / 365.25 if stats["otwarcie_data"] else 0
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Czas trwania kredytu",
+                  f"{int(lata_kredytu)} lat {int((lata_kredytu % 1) * 12)} mies.")
+        m2.metric("Spłacony kapitał",    fmt_pln(kapital_splac))
+        m3.metric("Zapłacone odsetki",   fmt_pln(stats["total_odsetki"]))
+        m4.metric("Łączne nadpłaty",     fmt_pln(stats["total_nadplaty"]))
+
+        # stosunek: na każde 1 PLN odsetek ile kapitału
+        if stats["total_odsetki"] > 0:
+            ratio = kapital_splac / stats["total_odsetki"]
+            st.caption(
+                f"Na każde **1 zł** odsetek spłacono **{ratio:.2f} zł** kapitału. "
+                f"Nadpłaty stanowią **{stats['total_nadplaty']/kapital_splac*100:.1f}%** "
+                f"całego spłaconego kapitału."
+            )
+
+        st.divider()
+
+        # ── roczne zestawienie ────────────────────────────────────────────────
+        st.subheader("Zestawienie roczne")
+
+        df_hist["_rok"] = df_hist["data"].apply(lambda d: d.year)
+
+        roczne = pd.DataFrame({
+            "Rok": sorted(df_hist["_rok"].unique()),
+        })
+
+        def roczna_suma(mask, rok):
+            return df_hist.loc[mask & (df_hist["_rok"] == rok), "kwota"].sum()
+
+        roczne["Odsetki"]  = roczne["Rok"].apply(
+            lambda r: roczna_suma(mask_odsetki_rata | mask_odsetki_nadp, r))
+        roczne["Kapitał"]  = roczne["Rok"].apply(
+            lambda r: roczna_suma(mask_kapital_rata, r))
+        roczne["Nadpłaty"] = roczne["Rok"].apply(
+            lambda r: roczna_suma(mask_kapital_nadp, r))
+        roczne["Łącznie"]  = roczne["Odsetki"] + roczne["Kapitał"] + roczne["Nadpłaty"]
+
+        # saldo na koniec roku – ostatni wpis z saldem > 0 w danym roku
+        saldo_po_roku = (
+            df_hist.loc[(mask_kapital_rata | mask_kapital_nadp) & (df_hist["saldo"] > 0)]
+            .groupby("_rok")["saldo"].min()
+        )
+        roczne["Saldo końcowe"] = roczne["Rok"].map(saldo_po_roku).fillna(0)
+
+        # formatowanie do wyświetlenia
+        roczne_disp = roczne.copy()
+        for col in ["Odsetki","Kapitał","Nadpłaty","Łącznie","Saldo końcowe"]:
+            roczne_disp[col] = roczne_disp[col].apply(lambda x: f"{x:,.2f}")
+        st.dataframe(roczne_disp, use_container_width=True, hide_index=True)
+
+        st.divider()
+
+        # ── wykres: roczna struktura wpłat ────────────────────────────────────
+        st.subheader("Roczna struktura wpłat")
+
+        fig_rok = go.Figure()
+        fig_rok.add_trace(go.Bar(
+            x=roczne["Rok"], y=roczne["Odsetki"],
+            name="Odsetki", marker_color="#f43f5e",
+        ))
+        fig_rok.add_trace(go.Bar(
+            x=roczne["Rok"], y=roczne["Kapitał"],
+            name="Kapitał rata", marker_color="#6366f1",
+        ))
+        fig_rok.add_trace(go.Bar(
+            x=roczne["Rok"], y=roczne["Nadpłaty"],
+            name="Nadpłaty", marker_color="#10b981",
+        ))
+        fig_rok.update_layout(
+            barmode="stack", xaxis_title="Rok", yaxis_title="PLN",
+            height=360, xaxis=dict(tickmode="linear", dtick=1),
+        )
+        st.plotly_chart(fig_rok, use_container_width=True)
+
+        # ── skumulowane odsetki i kapitał ─────────────────────────────────────
+        st.subheader("Skumulowane wpłaty w czasie")
+
+        df_cum = df_hist.copy()
+        df_cum["odsetki_all"] = df_hist.loc[
+            mask_odsetki_rata | mask_odsetki_nadp, "kwota"
+        ].reindex(df_hist.index, fill_value=0)
+        df_cum["kapital_all"] = df_hist.loc[
+            mask_kapital_rata | mask_kapital_nadp, "kwota"
+        ].reindex(df_hist.index, fill_value=0)
+
+        df_cum = df_cum.sort_values("data")
+        df_cum["cum_odsetki"] = df_cum["odsetki_all"].cumsum()
+        df_cum["cum_kapital"] = df_cum["kapital_all"].cumsum()
+
+        # agreguj po dniach (wiele transakcji tego samego dnia)
+        df_cum_agg = (
+            df_cum.groupby("data")[["cum_odsetki","cum_kapital"]].max().reset_index()
+        )
+
+        fig_cum = go.Figure()
+        fig_cum.add_trace(go.Scatter(
+            x=df_cum_agg["data"], y=df_cum_agg["cum_kapital"],
+            name="Spłacony kapitał", fill="tozeroy",
+            line=dict(color="#6366f1"), fillcolor="rgba(99,102,241,0.15)",
+        ))
+        fig_cum.add_trace(go.Scatter(
+            x=df_cum_agg["data"], y=df_cum_agg["cum_odsetki"],
+            name="Zapłacone odsetki", fill="tozeroy",
+            line=dict(color="#f43f5e"), fillcolor="rgba(244,63,94,0.12)",
+        ))
+        fig_cum.update_layout(
+            xaxis_title="Data", yaxis_title="PLN",
+            hovermode="x unified", height=360,
+        )
+        st.plotly_chart(fig_cum, use_container_width=True)
+
+        # ── efektywna stopa procentowa w czasie ───────────────────────────────
+        st.subheader("Efektywna stopa procentowa w czasie")
+
+        # łącz odsetki raty z saldem przed
+        df_odsetki = df_hist.loc[mask_odsetki_rata].copy()
+        df_saldo_przed = (
+            df_hist.loc[(mask_kapital_rata | mask_kapital_nadp) & (df_hist["saldo"] > 0)]
+            .groupby("data")["saldo"].min()
+        )
+
+        stopa_rows = []
+        prev_saldo = None
+        for _, row in df_odsetki.iterrows():
+            # saldo przed ratą = saldo po poprzedniej racie
+            saldo_przed = prev_saldo
+            if saldo_przed and saldo_przed > 0:
+                stopa_roczna = row["kwota"] / saldo_przed * 12 * 100
+                if 0 < stopa_roczna < 15:   # filtr anomalii
+                    stopa_rows.append({
+                        "data": row["data"],
+                        "stopa": round(stopa_roczna, 2),
+                    })
+            # aktualizuj poprzednie saldo
+            if row["data"] in df_saldo_przed.index:
+                prev_saldo = df_saldo_przed[row["data"]]
+
+        if stopa_rows:
+            df_stopa = pd.DataFrame(stopa_rows)
+            fig_stopa = go.Figure()
+            fig_stopa.add_trace(go.Scatter(
+                x=df_stopa["data"], y=df_stopa["stopa"],
+                mode="lines+markers", marker=dict(size=5),
+                line=dict(color="#f59e0b", width=2),
+                name="Stopa roczna %",
+            ))
+            fig_stopa.update_layout(
+                xaxis_title="Data", yaxis_title="%",
+                hovermode="x unified", height=300,
+                yaxis=dict(ticksuffix="%"),
+            )
+            st.plotly_chart(fig_stopa, use_container_width=True)
+            st.caption(
+                "Stopa obliczona ze wzoru: odsetki_raty / saldo_przed × 12. "
+                "Widoczne zmiany oprocentowania WIBOR w czasie."
+            )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 6 – Historia mBank CSV
+# ═══════════════════════════════════════════════════════════════════════════════
+
+with tab6:
     st.subheader("Historia spłat z mBank")
     st.markdown(
         "Wgraj plik CSV eksportowany z mBank Hipoteczny "
@@ -615,6 +804,8 @@ with tab5:
     if uploaded:
         raw = uploaded.read()
         df_raw = parse_mbank_csv(raw)
+        if df_raw is not None:
+            st.session_state.mbank_df = df_raw
 
         if df_raw is None:
             st.error(
